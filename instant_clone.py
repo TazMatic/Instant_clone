@@ -2,16 +2,115 @@
 import atexit
 import requests.packages.urllib3 as urllib3
 import ssl
+import argparse
+import getpass
 
 from pyVmomi import vim
+from pyVmomi import vmodl
 from pyVim.connect import SmartConnect, Disconnect
 
-from tools import cli
-from tools import tasks
+def wait_for_tasks(service_instance, tasks):
+    """Given the service instance si and tasks, it returns after all the
+   tasks are complete
+   """
+    property_collector = service_instance.content.propertyCollector
+    task_list = [str(task) for task in tasks]
+    # Create filter
+    obj_specs = [vmodl.query.PropertyCollector.ObjectSpec(obj=task)
+                 for task in tasks]
+    property_spec = vmodl.query.PropertyCollector.PropertySpec(type=vim.Task,
+                                                               pathSet=[],
+                                                               all=True)
+    filter_spec = vmodl.query.PropertyCollector.FilterSpec()
+    filter_spec.objectSet = obj_specs
+    filter_spec.propSet = [property_spec]
+    pcfilter = property_collector.CreateFilter(filter_spec, True)
+    try:
+        version, state = None, None
+        # Loop looking for updates till the state moves to a completed state.
+        while len(task_list):
+            update = property_collector.WaitForUpdates(version)
+            for filter_set in update.filterSet:
+                for obj_set in filter_set.objectSet:
+                    task = obj_set.obj
+                    for change in obj_set.changeSet:
+                        if change.name == 'info':
+                            state = change.val.state
+                        elif change.name == 'info.state':
+                            state = change.val
+                        else:
+                            continue
+
+                        if not str(task) in task_list:
+                            continue
+
+                        if state == vim.TaskInfo.State.success:
+                            # Remove task from taskList
+                            task_list.remove(str(task))
+                        elif state == vim.TaskInfo.State.error:
+                            raise task.info.error
+            # Move to next version
+            version = update.version
+    finally:
+        if pcfilter:
+pcfilter.Destroy()
+
+def build_arg_parser():
+    """
+    Builds a standard argument parser with arguments for talking to vCenter
+    -s service_host_name_or_ip
+    -o optional_port_number
+    -u required_user
+    -p optional_password
+    """
+    parser = argparse.ArgumentParser(
+        description='Standard Arguments for talking to vCenter')
+
+    # because -h is reserved for 'help' we use -s for service
+    parser.add_argument('-s', '--host',
+                        required=True,
+                        action='store',
+                        help='vSphere service to connect to')
+
+    # because we want -p for password, we use -o for port
+    parser.add_argument('-o', '--port',
+                        type=int,
+                        default=443,
+                        action='store',
+                        help='Port to connect on')
+
+    parser.add_argument('-u', '--user',
+                        required=True,
+                        action='store',
+                        help='User name to use when connecting to host')
+
+    parser.add_argument('-p', '--password',
+                        required=False,
+                        action='store',
+                        help='Password to use when connecting to host')
+
+    parser.add_argument('-S', '--disable_ssl_verification',
+                        required=False,
+                        action='store_true',
+                        help='Disable ssl host certificate verification')
+
+    return parser
+
+
+def prompt_for_password(args):
+    """
+    if no password is specified on the command line, prompt for it
+    """
+    if not args.password:
+        args.password = getpass.getpass(
+            prompt='Enter password for host %s and user %s: ' %
+                   (args.host, args.user))
+    return args
+
 
 
 def get_args():
-    parser = cli.build_arg_parser()
+    parser = build_arg_parser()
     parser.add_argument('-v', '--vm_name',
                         required=True,
                         action='store',
@@ -48,7 +147,7 @@ def get_args():
 
     args = parser.parse_args()
 
-    cli.prompt_for_password(args)
+    prompt_for_password(args)
     return args
 
 
@@ -69,7 +168,7 @@ def _clone_vm(si, template, vm_name, vm_folder, location):
         powerOn=True, template=False, location=location,
         snapshot=template.snapshot.rootSnapshotList[0].snapshot)
     task = template.Clone(name=vm_name, folder=vm_folder, spec=clone_spec)
-    tasks.wait_for_tasks(si, [task])
+    wait_for_tasks(si, [task])
     print "Successfully cloned and created the VM '{}'".format(vm_name)
 
 
@@ -86,7 +185,7 @@ def _take_template_snapshot(si, vm):
         task = vm.CreateSnapshot_Task(name='test_snapshot',
                                       memory=False,
                                       quiesce=False)
-        tasks.wait_for_tasks(si, [task])
+        wait_for_tasks(si, [task])
         print "Successfully taken snapshot of '{}'".format(vm.name)
 
 
