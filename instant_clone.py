@@ -22,6 +22,12 @@ def get_args():
                         action='store',
                         help='Name of the template/VM you are cloning from')
 
+    parser.add_argument('-n', '--number_of_clones,
+                        required=False,
+                        action='store',
+                        default=1,
+                        help='Number of clones to make.')
+    
     parser.add_argument('--datacenter_name',
                         required=False,
                         action='store',
@@ -86,7 +92,6 @@ def _take_template_snapshot(si, vm):
 
 def main():
     args = get_args()
-    # replace args with sys.argv[x]
     urllib3.disable_warnings()
     si = None
     context = None
@@ -138,9 +143,10 @@ def main():
         raise Exception("Couldn't find the template with the provided name "
                         "'{}'".format(args.template_name))
 
-    location = _get_relocation_spec(host_obj, cluster.resourcePool)
-    _take_template_snapshot(si, template)
-    _clone_vm(si, template, args.vm_name, vm_folder, location)
+    for clone_number in range(1, args.number_of_clones):
+        location = _get_relocation_spec(host_obj, cluster.resourcePool)
+        _take_template_snapshot(si, template)
+        _clone_vm(si, template, args.vm_name + str(x), vm_folder, location)
 
 if __name__ == "__main__":
 main()
